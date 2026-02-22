@@ -1,22 +1,21 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
-# Define o diretório de trabalho
 WORKDIR /app
 
-# Copia arquivos de dependências primeiro (aproveita cache de camadas)
+# Dependências primeiro (layer cache)
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Instala apenas o necessário para produção
-RUN npm install --production
+# Código
+COPY index.js ./
 
-# Copia o restante dos arquivos (certifique-se de ter um .dockerignore)
-COPY . .
+EXPOSE 3000
 
-# Usa um usuário não-root por segurança
+# Health check nativo do Docker — Portainer exibe o status automaticamente
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+
+# Usuário não-root
 USER node
 
-# Variáveis de ambiente padrão (podem ser sobrescritas no run)
-ENV NODE_ENV=production
-
-# O comando para rodar o MCP
 CMD ["node", "index.js"]

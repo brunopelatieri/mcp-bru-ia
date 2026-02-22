@@ -1,26 +1,20 @@
 {
-  "name": "mcp-bru-ia",
+  "name": "n8n-mcp",
   "version": "1.0.0",
-  "description": "MCP Server para integração entre Cursor e n8n",
-  "main": "index.js",
+  "description": "MCP Server para controlar o n8n via Cursor / Claude Code",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev":   "node --watch index.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/brunopelatieri/mcp-bru-ia.git"
-  },
-  "keywords": [
-    "mcp",
-    "n8n",
-    "cursor"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "node-fetch": "^3.3.2"
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "express":                   "^4.21.2",
+    "node-fetch":                "^3.3.2",
+    "redis":                     "^4.7.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

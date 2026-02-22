@@ -1,0 +1,158 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# n8n MCP Server — Docker Swarm Stack
+#
+# Deploy:
+#   docker stack deploy -c docker-compose.yml n8n-mcp
+#
+# Rebuild + redeploy:
+#   docker build -t n8n-mcp:latest .
+#   docker stack deploy -c docker-compose.yml n8n-mcp
+#
+# Logs:
+#   docker service logs -f n8n-mcp_app
+#
+# Remover:
+#   docker stack rm n8n-mcp
+#
+# ─── Pré-requisitos ───────────────────────────────────────────────────────────
+# 1. Swarm iniciado:     docker swarm init
+# 2. Rede Traefik:       docker network create --driver overlay traefik-public
+# 3. Traefik rodando na rede traefik-public (veja traefik.yml abaixo)
+# 4. Secrets criados:
+#      echo "https://seu-n8n.com" | docker secret create n8n_url -
+#      echo "sua-api-key"         | docker secret create n8n_api_key -
+#      echo "sua-server-key"      | docker secret create mcp_server_api_key -
+#
+# ─── Sobre replicas: 1 ────────────────────────────────────────────────────────
+# Sessões MCP são stateful e ficam em memória (Map).
+# Com replicas: 1, o Swarm garante alta disponibilidade via restart automático
+# sem o problema de sessões presas a réplicas diferentes.
+#
+# Para escalar (replicas > 1), adicione Redis e defina REDIS_URL.
+# O código detecta automaticamente e compartilha sessões entre réplicas.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  app:
+    image: n8n-mcp:latest
+    # Usar 'build: .' se quiser build automático pelo Portainer Git deploy
+    # build: .
+
+    networks:
+      - traefik-public
+      - internal
+
+    environment:
+      PORT: 3000
+      # Modo single-tenant: credenciais fixas via Docker Secrets
+      N8N_URL_FILE:        /run/secrets/n8n_url
+      N8N_API_KEY_FILE:    /run/secrets/n8n_api_key
+      SERVER_API_KEY_FILE: /run/secrets/mcp_server_api_key
+      # Modo multi-réplica com Redis (descomente se necessário):
+      # REDIS_URL: redis://redis:6379
+
+    secrets:
+      - n8n_url
+      - n8n_api_key
+      - mcp_server_api_key
+
+    deploy:
+      # ── IMPORTANTE: manter 1 réplica sem Redis ────────────────────────────
+      # Aumente para 2+ apenas se REDIS_URL estiver configurado
+      replicas: 1
+
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: start-first       # sobe nova réplica antes de derrubar a antiga
+
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+      labels:
+        # ── Traefik ────────────────────────────────────────────────────────
+        - "traefik.enable=true"
+        - "traefik.docker.network=traefik-public"
+
+        # Roteamento HTTP → HTTPS
+        - "traefik.http.routers.n8n-mcp-http.rule=Host(`mcp.seudominio.com`)"
+        - "traefik.http.routers.n8n-mcp-http.entrypoints=web"
+        - "traefik.http.routers.n8n-mcp-http.middlewares=https-redirect"
+
+        # Roteamento HTTPS
+        - "traefik.http.routers.n8n-mcp.rule=Host(`mcp.seudominio.com`)"
+        - "traefik.http.routers.n8n-mcp.entrypoints=websecure"
+        - "traefik.http.routers.n8n-mcp.tls=true"
+        - "traefik.http.routers.n8n-mcp.tls.certresolver=letsencrypt"
+
+        # Serviço
+        - "traefik.http.services.n8n-mcp.loadbalancer.server.port=3000"
+
+        # Sticky session — garante que o Traefik sempre roteie para
+        # a mesma réplica enquanto a sessão MCP estiver ativa.
+        # Essencial se replicas > 1 sem Redis.
+        - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie=true"
+        - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.name=mcp_sticky"
+        - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.secure=true"
+        - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.httpOnly=true"
+
+        # Middleware: redirect HTTP → HTTPS
+        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Redis (opcional — habilite para replicas > 1) ─────────────────────────
+  # redis:
+  #   image: redis:7-alpine
+  #   networks:
+  #     - internal
+  #   volumes:
+  #     - redis-data:/data
+  #   command: redis-server --appendonly yes
+  #   deploy:
+  #     replicas: 1
+  #     restart_policy:
+  #       condition: on-failure
+  #     resources:
+  #       limits:
+  #         memory: 128M
+
+networks:
+  traefik-public:
+    external: true    # criada antes do deploy: docker network create --driver overlay traefik-public
+  internal:
+    driver: overlay
+    internal: true    # sem acesso externo — apenas comunicação interna (ex: Redis)
+
+secrets:
+  n8n_url:
+    external: true
+  n8n_api_key:
+    external: true
+  mcp_server_api_key:
+    external: true
+
+volumes:
+  redis-data:         # descomente se habilitar Redis

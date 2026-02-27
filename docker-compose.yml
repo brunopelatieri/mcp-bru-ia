@@ -35,22 +35,18 @@
 services:
 
   app:
-    image: n8n-mcp:latest
-    # Usar 'build: .' se quiser build automático pelo Portainer Git deploy
+    image: brunopelatieri/mcp-bru-ia:latest
     # build: .
 
     networks:
-      - traefik-public
-      - internal
+      - bru
 
     environment:
       PORT: 3000
-      # Modo single-tenant: credenciais fixas via Docker Secrets
       N8N_URL_FILE:        /run/secrets/n8n_url
       N8N_API_KEY_FILE:    /run/secrets/n8n_api_key
       SERVER_API_KEY_FILE: /run/secrets/mcp_server_api_key
-      # Modo multi-réplica com Redis (descomente se necessário):
-      # REDIS_URL: redis://redis:6379
+      # REDIS_URL: redis://redis:6379  # descomente para replicas > 1
 
     secrets:
       - n8n_url
@@ -58,8 +54,6 @@ services:
       - mcp_server_api_key
 
     deploy:
-      # ── IMPORTANTE: manter 1 réplica sem Redis ────────────────────────────
-      # Aumente para 2+ apenas se REDIS_URL estiver configurado
       replicas: 1
 
       restart_policy:
@@ -72,7 +66,7 @@ services:
         parallelism: 1
         delay: 10s
         failure_action: rollback
-        order: start-first       # sobe nova réplica antes de derrubar a antiga
+        order: start-first
 
       rollback_config:
         parallelism: 1
@@ -86,33 +80,30 @@ services:
           memory: 64M
 
       labels:
-        # ── Traefik ────────────────────────────────────────────────────────
         - "traefik.enable=true"
-        - "traefik.docker.network=traefik-public"
+        - "traefik.docker.network=bru"
 
-        # Roteamento HTTP → HTTPS
-        - "traefik.http.routers.n8n-mcp-http.rule=Host(`mcp.seudominio.com`)"
+        # ── HTTP → HTTPS redirect ──────────────────────────────────────────
+        - "traefik.http.routers.n8n-mcp-http.rule=Host(`bmcp.bru.ia.br`)"
         - "traefik.http.routers.n8n-mcp-http.entrypoints=web"
         - "traefik.http.routers.n8n-mcp-http.middlewares=https-redirect"
 
-        # Roteamento HTTPS
-        - "traefik.http.routers.n8n-mcp.rule=Host(`mcp.seudominio.com`)"
+        # ── HTTPS ──────────────────────────────────────────────────────────
+        - "traefik.http.routers.n8n-mcp.rule=Host(`bmcp.bru.ia.br`)"
         - "traefik.http.routers.n8n-mcp.entrypoints=websecure"
         - "traefik.http.routers.n8n-mcp.tls=true"
-        - "traefik.http.routers.n8n-mcp.tls.certresolver=letsencrypt"
+        - "traefik.http.routers.n8n-mcp.tls.certresolver=letsencryptresolver"
 
-        # Serviço
+        # ── Serviço ────────────────────────────────────────────────────────
         - "traefik.http.services.n8n-mcp.loadbalancer.server.port=3000"
 
-        # Sticky session — garante que o Traefik sempre roteie para
-        # a mesma réplica enquanto a sessão MCP estiver ativa.
-        # Essencial se replicas > 1 sem Redis.
+        # ── Sticky session (segurança extra se escalar réplicas) ───────────
         - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie=true"
         - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.name=mcp_sticky"
         - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.secure=true"
         - "traefik.http.services.n8n-mcp.loadbalancer.sticky.cookie.httpOnly=true"
 
-        # Middleware: redirect HTTP → HTTPS
+        # ── Middleware redirect ────────────────────────────────────────────
         - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
         - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
 
@@ -127,7 +118,7 @@ services:
   # redis:
   #   image: redis:7-alpine
   #   networks:
-  #     - internal
+  #     - bru
   #   volumes:
   #     - redis-data:/data
   #   command: redis-server --appendonly yes
@@ -140,11 +131,9 @@ services:
   #         memory: 128M
 
 networks:
-  traefik-public:
-    external: true    # criada antes do deploy: docker network create --driver overlay traefik-public
-  internal:
-    driver: overlay
-    internal: true    # sem acesso externo — apenas comunicação interna (ex: Redis)
+  bru:
+    external: true
+    name: bru
 
 secrets:
   n8n_url:
@@ -155,4 +144,4 @@ secrets:
     external: true
 
 volumes:
-  redis-data:         # descomente se habilitar Redis
+  redis-data:

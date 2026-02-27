@@ -1,13 +1,16 @@
 FROM node:22-alpine
 
+# Adicione esta linha para instalar ferramentas básicas de compilação
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Dependências primeiro (layer cache)
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Código
-COPY index.js ./
+COPY index.js secrets-reader.js ./
 
 EXPOSE 3000
 
@@ -19,3 +22,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 USER node
 
 CMD ["node", "index.js"]
+
+

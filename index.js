@@ -1,18 +1,16 @@
 import "./secrets-reader.js";
-import { McpServer }                     from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express                           from "express";
-import fetch                             from "node-fetch";
-import { randomUUID }                    from "node:crypto";
+import express  from "express";
+import fetch    from "node-fetch";
 
-const DEFAULT_N8N_URL     = process.env.N8N_URL        ?? "";
-const DEFAULT_N8N_API_KEY = process.env.N8N_API_KEY    ?? "";
-const PORT                = parseInt(process.env.PORT  ?? "3000", 10);
+const DEFAULT_N8N_URL     = process.env.N8N_URL     ?? "";
+const DEFAULT_N8N_API_KEY = process.env.N8N_API_KEY ?? "";
+const PORT                = parseInt(process.env.PORT ?? "3000", 10);
 
+// ─── n8n API ──────────────────────────────────────────────────────────────────
 function makeN8nRequest(n8nUrl, n8nApiKey) {
     return async function(path, method = "GET", body) {
         const base = n8nUrl.endsWith("/") ? n8nUrl : `${n8nUrl}/`;
-        const url  = `${base}api/v1/${path.startsWith("/") ? path.slice(1) : path}`;
+        const url  = `${base}api/v1/${path.replace(/^\//, "")}`;
         const ctrl = new AbortController();
         const t    = setTimeout(() => ctrl.abort(), 10000);
         try {
@@ -29,167 +27,186 @@ function makeN8nRequest(n8nUrl, n8nApiKey) {
     };
 }
 
-function createMcpServer(n8nRequest) {
-    const server = new McpServer({ name: "n8n-mcp", version: "1.0.0" });
+// ─── Tool definitions ─────────────────────────────────────────────────────────
+function getToolDefinitions() {
+    return [
+        {
+            name: "list_workflows",
+            description: "Lista todos os workflows do n8n",
+            inputSchema: { type: "object", properties: {}, required: [] }
+        },
+        {
+            name: "search_workflows",
+            description: "Busca workflows pelo nome",
+            inputSchema: { type: "object", properties: { name: { type: "string", description: "Texto a buscar" } }, required: ["name"] }
+        },
+        {
+            name: "get_workflow",
+            description: "Retorna detalhes de um workflow pelo ID",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "ID do workflow" } }, required: ["id"] }
+        },
+        {
+            name: "create_workflow",
+            description: "Cria um novo workflow no n8n",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    name:        { type: "string", description: "Nome do workflow" },
+                    nodes:       { type: "array",  description: "Array de nós", items: { type: "object" } },
+                    connections: { type: "object", description: "Conexões entre nós" }
+                },
+                required: ["name"]
+            }
+        },
+        {
+            name: "update_workflow",
+            description: "Atualiza um workflow existente",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    id:          { type: "string", description: "ID do workflow" },
+                    name:        { type: "string", description: "Novo nome (opcional)" },
+                    nodes:       { type: "array",  description: "Nós (opcional)", items: { type: "object" } },
+                    connections: { type: "object", description: "Conexões (opcional)" }
+                },
+                required: ["id"]
+            }
+        },
+        {
+            name: "activate_workflow",
+            description: "Ativa ou desativa um workflow",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    id:     { type: "string",  description: "ID do workflow" },
+                    active: { type: "boolean", description: "true para ativar, false para desativar" }
+                },
+                required: ["id", "active"]
+            }
+        },
+        {
+            name: "delete_workflow",
+            description: "Remove um workflow permanentemente",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "ID do workflow" } }, required: ["id"] }
+        },
+        {
+            name: "get_executions",
+            description: "Lista execuções recentes de um workflow",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    workflowId: { type: "string", description: "ID do workflow" },
+                    limit:      { type: "number", description: "Limite de resultados (padrão 10)" }
+                },
+                required: ["workflowId"]
+            }
+        },
+        {
+            name: "execute_workflow_via_webhook",
+            description: "Executa um workflow via webhook",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    webhookUrl: { type: "string", description: "URL do webhook" },
+                    payload:    { type: "object", description: "Body a enviar (opcional)" }
+                },
+                required: ["webhookUrl"]
+            }
+        },
+        {
+            name: "get_workflow_as_template",
+            description: "Exporta workflow como template reutilizável",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "ID do workflow" } }, required: ["id"] }
+        }
+    ];
+}
 
-    server.tool("list_workflows", "Lista todos os workflows do n8n", {}, async () => {
-        try {
-            const data = await n8nRequest("/workflows");
-            const list = data?.data ?? data;
-            return { content: [
-                { type: "text", text: `${Array.isArray(list) ? list.length : "?"} workflow(s) encontrado(s).` },
-                { type: "text", text: JSON.stringify(data, null, 2) }
-            ]};
-        } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-    });
+// ─── Tool executor ────────────────────────────────────────────────────────────
+async function executeTool(name, args, n8nRequest) {
+    const ok  = (texts) => ({ content: Array.isArray(texts) ? texts.map(t => ({ type: "text", text: t })) : [{ type: "text", text: texts }] });
+    const err = (msg)   => ({ content: [{ type: "text", text: `Erro: ${msg}` }], isError: true });
 
-    server.tool("search_workflows", "Busca workflows pelo nome",
-        { name: { type: "string", description: "Texto a buscar" } },
-        async ({ name }) => {
-            try {
+    try {
+        switch(name) {
+            case "list_workflows": {
                 const data = await n8nRequest("/workflows");
-                const list = (data?.data ?? data).filter(w => w.name?.toLowerCase().includes(name.toLowerCase()));
-                return { content: [
-                    { type: "text", text: `${list.length} encontrado(s) com "${name}".` },
-                    { type: "text", text: JSON.stringify(list.map(w => ({ id: w.id, name: w.name, active: w.active })), null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("get_workflow", "Retorna detalhes de um workflow pelo ID",
-        { id: { type: "string", description: "ID do workflow" } },
-        async ({ id }) => {
-            try {
-                const data = await n8nRequest(`/workflows/${id}`);
-                return { content: [
-                    { type: "text", text: `Workflow: "${data.name}" (ativo: ${data.active})` },
-                    { type: "text", text: JSON.stringify(data, null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("create_workflow", "Cria um novo workflow",
-        {
-            name:        { type: "string",  description: "Nome do workflow" },
-            nodes:       { type: "string",  description: "Array de nós em JSON string" },
-            connections: { type: "string",  description: "Conexões entre nós em JSON string" }
-        },
-        async ({ name, nodes, connections }) => {
-            try {
-                const parsedNodes       = typeof nodes       === "string" ? JSON.parse(nodes)       : (nodes       ?? []);
-                const parsedConnections = typeof connections === "string" ? JSON.parse(connections) : (connections ?? {});
-                const data = await n8nRequest("/workflows", "POST", { name, nodes: parsedNodes, connections: parsedConnections, settings: {} });
-                return { content: [
-                    { type: "text", text: "Workflow criado." },
-                    { type: "text", text: JSON.stringify({ id: data.id, name: data.name }, null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("update_workflow", "Atualiza um workflow",
-        {
-            id:          { type: "string", description: "ID do workflow" },
-            name:        { type: "string", description: "Novo nome (opcional)" },
-            nodes:       { type: "string", description: "Nós em JSON string (opcional)" },
-            connections: { type: "string", description: "Conexões em JSON string (opcional)" }
-        },
-        async ({ id, name, nodes, connections }) => {
-            try {
-                const parsedNodes       = nodes       ? (typeof nodes       === "string" ? JSON.parse(nodes)       : nodes)       : undefined;
-                const parsedConnections = connections ? (typeof connections === "string" ? JSON.parse(connections) : connections) : undefined;
-                const ex = await n8nRequest(`/workflows/${id}`);
-                const up = await n8nRequest(`/workflows/${id}`, "PUT", {
-                    id: ex.id, staticData: ex.staticData, settings: ex.settings,
-                    versionId: ex.versionId, active: ex.active,
-                    name: name ?? ex.name,
-                    nodes: parsedNodes ?? ex.nodes,
-                    connections: parsedConnections ?? ex.connections
+                const list = data?.data ?? data;
+                return ok([`${Array.isArray(list) ? list.length : "?"} workflow(s) encontrado(s).`, JSON.stringify(data, null, 2)]);
+            }
+            case "search_workflows": {
+                const data = await n8nRequest("/workflows");
+                const list = (data?.data ?? data).filter(w => w.name?.toLowerCase().includes((args.name ?? "").toLowerCase()));
+                return ok([`${list.length} encontrado(s) com "${args.name}".`, JSON.stringify(list.map(w => ({ id: w.id, name: w.name, active: w.active })), null, 2)]);
+            }
+            case "get_workflow": {
+                const data = await n8nRequest(`/workflows/${args.id}`);
+                return ok([`Workflow: "${data.name}" (ativo: ${data.active})`, JSON.stringify(data, null, 2)]);
+            }
+            case "create_workflow": {
+                const nodes       = args.nodes       ?? [];
+                const connections = args.connections ?? {};
+                const data = await n8nRequest("/workflows", "POST", { name: args.name, nodes, connections, settings: {} });
+                return ok(["Workflow criado.", JSON.stringify({ id: data.id, name: data.name }, null, 2)]);
+            }
+            case "update_workflow": {
+                const ex = await n8nRequest(`/workflows/${args.id}`);
+                const body = {
+                    name:        args.name        ?? ex.name,
+                    nodes:       args.nodes       ?? ex.nodes,
+                    connections: args.connections ?? ex.connections,
+                    settings:    ex.settings      ?? {}
+                };
+                const up = await n8nRequest(`/workflows/${args.id}`, "PUT", body);
+                return ok(["Workflow atualizado.", JSON.stringify({ id: up.id, name: up.name }, null, 2)]);
+            }
+            case "activate_workflow": {
+                await n8nRequest(`/workflows/${args.id}/${args.active ? "activate" : "deactivate"}`, "POST");
+                return ok(`Workflow ${args.id} ${args.active ? "ativado" : "desativado"}.`);
+            }
+            case "delete_workflow": {
+                await n8nRequest(`/workflows/${args.id}`, "DELETE");
+                return ok(`Workflow ${args.id} removido.`);
+            }
+            case "get_executions": {
+                const data = await n8nRequest(`/executions?workflowId=${args.workflowId}&limit=${args.limit ?? 10}`);
+                return ok([`${(data?.data ?? data).length ?? "?"} execução(ões).`, JSON.stringify(data, null, 2)]);
+            }
+            case "execute_workflow_via_webhook": {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 15000);
+                const res = await fetch(args.webhookUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(args.payload ?? {}),
+                    signal: ctrl.signal
                 });
-                return { content: [
-                    { type: "text", text: "Workflow atualizado." },
-                    { type: "text", text: JSON.stringify({ id: up.id, name: up.name }, null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("activate_workflow", "Ativa ou desativa um workflow",
-        { id: { type: "string", description: "ID" }, active: { type: "boolean", description: "true=ativar" } },
-        async ({ id, active }) => {
-            try {
-                await n8nRequest(`/workflows/${id}/${active ? "activate" : "deactivate"}`, "POST");
-                return { content: [{ type: "text", text: `Workflow ${id} ${active ? "ativado" : "desativado"}.` }] };
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("delete_workflow", "Remove um workflow",
-        { id: { type: "string", description: "ID" } },
-        async ({ id }) => {
-            try {
-                await n8nRequest(`/workflows/${id}`, "DELETE");
-                return { content: [{ type: "text", text: `Workflow ${id} removido.` }] };
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("get_executions", "Lista execuções recentes de um workflow",
-        { workflowId: { type: "string", description: "ID do workflow" }, limit: { type: "number", description: "Limite (padrão 10)" } },
-        async ({ workflowId, limit = 10 }) => {
-            try {
-                const data = await n8nRequest(`/executions?workflowId=${workflowId}&limit=${limit}`);
-                return { content: [
-                    { type: "text", text: `${(data?.data ?? data).length ?? "?"} execução(ões).` },
-                    { type: "text", text: JSON.stringify(data, null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("execute_workflow_via_webhook", "Executa workflow via webhook",
-        { webhookUrl: { type: "string", description: "URL do webhook" }, payload: { type: "string", description: "Body em JSON string (opcional)" } },
-        async ({ webhookUrl, payload }) => {
-            const parsedPayload = payload ? (typeof payload === "string" ? JSON.parse(payload) : payload) : {};
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 15000);
-            try {
-                const res = await fetch(webhookUrl, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(parsedPayload), signal:ctrl.signal });
                 clearTimeout(t);
                 const text = await res.text();
                 let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
-                if (!res.ok) return { content: [{ type:"text", text:`Webhook erro (${res.status}): ${text}` }], isError: true };
-                return { content: [
-                    { type: "text", text: `Webhook OK (${res.status}).` },
-                    { type: "text", text: typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2) }
-                ]};
-            } catch(e) { clearTimeout(t); return { content: [{ type:"text", text:`Erro: ${e.message}` }], isError: true }; }
-        }
-    );
-
-    server.tool("get_workflow_as_template", "Exporta workflow como template reutilizável",
-        { id: { type: "string", description: "ID do workflow" } },
-        async ({ id }) => {
-            try {
-                const data = await n8nRequest(`/workflows/${id}`);
+                if (!res.ok) return err(`Webhook erro (${res.status}): ${text}`);
+                return ok([`Webhook OK (${res.status}).`, typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2)]);
+            }
+            case "get_workflow_as_template": {
+                const data = await n8nRequest(`/workflows/${args.id}`);
                 const tpl = {
                     name: `${data.name} (cópia)`,
                     nodes: data.nodes.map(n => { const c={...n}; delete c.id; return c; }),
                     connections: data.connections,
                     settings: data.settings ?? {}
                 };
-                return { content: [
-                    { type: "text", text: `Template de "${data.name}". Use com create_workflow.` },
-                    { type: "text", text: JSON.stringify(tpl, null, 2) }
-                ]};
-            } catch(e) { return { content: [{ type: "text", text: `Erro: ${e.message}` }], isError: true }; }
+                return ok([`Template de "${data.name}". Use com create_workflow.`, JSON.stringify(tpl, null, 2)]);
+            }
+            default:
+                return err(`Tool desconhecida: ${name}`);
         }
-    );
-
-    return server;
+    } catch(e) {
+        return err(e.message);
+    }
 }
+
+// ─── JSON-RPC ─────────────────────────────────────────────────────────────────
+function jsonrpc(id, result) { return { jsonrpc: "2.0", id: id ?? null, result }; }
+function jsonrpcError(id, code, message) { return { jsonrpc: "2.0", id: id ?? null, error: { code, message } }; }
 
 // ─── Express ──────────────────────────────────────────────────────────────────
 const app = express();
@@ -197,70 +214,76 @@ app.use(express.json());
 
 app.get("/.well-known/oauth-authorization-server", (_req, res) => res.status(404).end());
 app.get("/.well-known/openid-configuration",       (_req, res) => res.status(404).end());
-app.get("/health", (_req, res) => res.json({ status:"ok", time:new Date().toISOString() }));
+app.get("/health", (_req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
-// ─── MCP Handler — STATELESS puro ─────────────────────────────────────────────
-app.post("/mcp", async (req, res) => {
-    req.headers["accept"]       = "application/json, text/event-stream";
-    req.headers["content-type"] = "application/json";
-
-    const method = req.body?.method ?? "unknown";
-    console.log(`[POST /mcp] method=${method}`);
-
-    // notifications/initialized não tem resposta — retorna 202 diretamente
-    // O SDK stateless rejeita notificações sem initialize prévio na mesma instância
-    if (method === "notifications/initialized") {
-        res.status(202).end();
-        console.log(`[POST /mcp] ok method=${method} (202 direto)`);
-        return;
-    }
-
-    const n8nUrl    = DEFAULT_N8N_URL;
-    const n8nApiKey = DEFAULT_N8N_API_KEY;
-
-    if (!n8nUrl || !n8nApiKey) {
-        return res.status(500).json({ jsonrpc:"2.0", error:{ code:-32000, message:"N8N_URL/N8N_API_KEY não configurados" }, id: req.body?.id ?? null });
-    }
-
-    try {
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-        const server    = createMcpServer(makeN8nRequest(n8nUrl, n8nApiKey));
-        await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-        console.log(`[POST /mcp] ok method=${method}`);
-    } catch(e) {
-        console.error(`[POST /mcp] ERROR method=${method}: ${e.message}`);
-        if (!res.headersSent) res.status(500).json({ jsonrpc:"2.0", error:{ code:-32000, message:e.message }, id: req.body?.id ?? null });
-    }
-});
-
-// GET /mcp — mcp-remote abre um SSE stream após connect.
-// Com transport stateless, retornamos um SSE keep-alive simples.
 app.get("/mcp", (req, res) => {
-    console.log(`[GET /mcp] abrindo SSE keep-alive`);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
-    const ping = setInterval(() => {
-        try { res.write(": ping\n\n"); } catch { clearInterval(ping); }
-    }, 15000);
-    req.on("close", () => {
-        clearInterval(ping);
-        console.log(`[GET /mcp] cliente desconectou`);
-    });
+    const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { clearInterval(ping); } }, 15000);
+    req.on("close", () => clearInterval(ping));
+});
+
+app.post("/mcp", async (req, res) => {
+    const { method, params, id } = req.body ?? {};
+    console.log(`[POST /mcp] method=${method}`);
+
+    if (method?.startsWith("notifications/")) return res.status(202).end();
+
+    const wantsSSE = (req.headers["accept"] ?? "").includes("text/event-stream");
+    const send = (payload) => {
+        if (wantsSSE) {
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+            res.end();
+        } else {
+            res.json(payload);
+        }
+    };
+
+    const n8nRequest = makeN8nRequest(DEFAULT_N8N_URL, DEFAULT_N8N_API_KEY);
+
+    try {
+        switch(method) {
+            case "initialize":
+                return send(jsonrpc(id, {
+                    protocolVersion: params?.protocolVersion ?? "2025-03-26",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "n8n-mcp", version: "1.0.0" }
+                }));
+            case "tools/list":
+                return send(jsonrpc(id, { tools: getToolDefinitions() }));
+            case "tools/call": {
+                const toolName = params?.name;
+                const toolArgs = params?.arguments ?? {};
+                console.log(`[tools/call] ${toolName} args=${JSON.stringify(toolArgs)}`);
+                if (!toolName) return send(jsonrpcError(id, -32602, "params.name é obrigatório"));
+                const result = await executeTool(toolName, toolArgs, n8nRequest);
+                return send(jsonrpc(id, result));
+            }
+            case "ping":
+                return send(jsonrpc(id, {}));
+            default:
+                return send(jsonrpcError(id, -32601, `Method not found: ${method}`));
+        }
+    } catch(e) {
+        console.error(`[POST /mcp] ERROR: ${e.message}`);
+        return send(jsonrpcError(id, -32000, e.message));
+    }
 });
 
 app.use((err, req, res, _next) => {
-    console.error(`[ERROR] ${req.method} ${req.path}:`, err.message);
+    console.error(`[ERROR]`, err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`╔══════════════════════════════════════════════╗`);
-    console.log(`║    n8n MCP Server v4 — Stateless puro        ║`);
+    console.log(`║    n8n MCP Server v5 — JSON-RPC direto       ║`);
     console.log(`╠══════════════════════════════════════════════╣`);
-    console.log(`║  POST /mcp  → stateless (sem sessão)         ║`);
+    console.log(`║  POST /mcp  → JSON-RPC sem SDK               ║`);
     console.log(`║  GET  /mcp  → SSE keep-alive                 ║`);
     console.log(`║  GET  /health                                 ║`);
     console.log(`╠══════════════════════════════════════════════╣`);

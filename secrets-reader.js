@@ -11,8 +11,7 @@ import { readFileSync, existsSync } from "node:fs";
 const secretMappings = [
     ["N8N_URL_FILE",        "N8N_URL"],
     ["N8N_API_KEY_FILE",    "N8N_API_KEY"],
-    ["SERVER_API_KEY_FILE", "SERVER_API_KEY"],
-    ["REDIS_URL_FILE",      "REDIS_URL"]
+    ["MCP_ALLOWED_KEYS_FILE", "MCP_ALLOWED_KEYS"]
 ];
 
 for (const [fileEnv, targetEnv] of secretMappings) {

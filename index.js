@@ -291,7 +291,7 @@ app.post("/mcp", async (req, res) => {
             case "tools/call": {
                 const toolName = params?.name;
                 const toolArgs = params?.arguments ?? {};
-                console.log(`[tools/call] ${toolName} args=${JSON.stringify(toolArgs)}`);
+                //console.log(`[tools/call] ${toolName} args=${JSON.stringify(toolArgs)}`);
                 if (!toolName) return send(jsonrpcError(id, -32602, "params.name é obrigatório"));
                 const result = await executeTool(toolName, toolArgs, n8nRequest);
                 return send(jsonrpc(id, result));

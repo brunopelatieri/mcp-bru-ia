@@ -227,7 +227,22 @@ app.get("/mcp", (req, res) => {
 
 app.post("/mcp", async (req, res) => {
     const { method, params, id } = req.body ?? {};
-    console.log(`[POST /mcp] method=${method}`);
+    console.log(`[POST /mcp] method=${method} headers=${JSON.stringify(Object.keys(req.headers))}`);
+    console.log(`[POST /mcp] x-n8n-url=${req.headers["x-n8n-url"]} x-mcp-key=${req.headers["x-mcp-key"]?.slice(0,8)}`);
+
+    // Auth — SERVER_API_KEY é obrigatória
+    const MCP_KEY = process.env.SERVER_API_KEY ?? "";
+    const clientKey = req.headers["x-mcp-key"] ?? "";
+    if (!method?.startsWith("notifications/")) {
+        if (!MCP_KEY) {
+            console.log(`[auth] SERVER_API_KEY não configurada no servidor`);
+            return res.status(500).json({ jsonrpc:"2.0", error:{ code:-32000, message:"Servidor mal configurado: SERVER_API_KEY ausente" }, id: req.body?.id ?? null });
+        }
+        if (clientKey !== MCP_KEY) {
+            console.log(`[auth] chave inválida: "${clientKey.slice(0,8)}..."`);
+            return res.status(401).json({ jsonrpc:"2.0", error:{ code:-32000, message:"Unauthorized: X-MCP-KEY inválida ou ausente" }, id: req.body?.id ?? null });
+        }
+    }
 
     if (method?.startsWith("notifications/")) return res.status(202).end();
 
@@ -243,7 +258,17 @@ app.post("/mcp", async (req, res) => {
         }
     };
 
-    const n8nRequest = makeN8nRequest(DEFAULT_N8N_URL, DEFAULT_N8N_API_KEY);
+    const n8nUrl    = req.headers["x-n8n-url"]     ?? "";
+    const n8nApiKey = req.headers["x-n8n-api-key"] ?? "";
+
+    if (!n8nUrl) {
+        return send(jsonrpcError(id, -32000, "Header X-N8N-URL obrigatório. Configure sua URL do n8n."));
+    }
+    if (!n8nApiKey) {
+        return send(jsonrpcError(id, -32000, "Header X-N8N-API-KEY obrigatório. Configure sua API key do n8n."));
+    }
+
+    const n8nRequest = makeN8nRequest(n8nUrl, n8nApiKey);
 
     try {
         switch(method) {

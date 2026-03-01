@@ -2,8 +2,6 @@ import "./secrets-reader.js";
 import express  from "express";
 import fetch    from "node-fetch";
 
-const DEFAULT_N8N_URL     = process.env.N8N_URL     ?? "";
-const DEFAULT_N8N_API_KEY = process.env.N8N_API_KEY ?? "";
 const PORT                = parseInt(process.env.PORT ?? "3000", 10);
 
 // ─── n8n API ──────────────────────────────────────────────────────────────────
@@ -227,21 +225,31 @@ app.get("/mcp", (req, res) => {
 
 app.post("/mcp", async (req, res) => {
     const { method, params, id } = req.body ?? {};
-    console.log(`[POST /mcp] method=${method} headers=${JSON.stringify(Object.keys(req.headers))}`);
-    console.log(`[POST /mcp] x-n8n-url=${req.headers["x-n8n-url"]} x-mcp-key=${req.headers["x-mcp-key"]?.slice(0,8)}`);
-
-    // Auth — SERVER_API_KEY é obrigatória
-    const MCP_KEY = process.env.SERVER_API_KEY ?? "";
-    const clientKey = req.headers["x-mcp-key"] ?? "";
+    // Auth — valida X-MCP-KEY contra lista de chaves por usuário
+    // MCP_ALLOWED_KEYS = "nome1:chave1,nome2:chave2,..." (secret Docker)
     if (!method?.startsWith("notifications/")) {
-        if (!MCP_KEY) {
-            console.log(`[auth] SERVER_API_KEY não configurada no servidor`);
-            return res.status(500).json({ jsonrpc:"2.0", error:{ code:-32000, message:"Servidor mal configurado: SERVER_API_KEY ausente" }, id: req.body?.id ?? null });
+        const clientKey = req.headers["x-mcp-key"] ?? "";
+        const rawKeys   = process.env.MCP_ALLOWED_KEYS ?? "";
+
+        if (!rawKeys) {
+            console.log(`[auth] MCP_ALLOWED_KEYS não configurado no servidor`);
+            return res.status(500).json({ jsonrpc:"2.0", error:{ code:-32000, message:"Servidor mal configurado: MCP_ALLOWED_KEYS ausente" }, id: req.body?.id ?? null });
         }
-        if (clientKey !== MCP_KEY) {
-            console.log(`[auth] chave inválida: "${clientKey.slice(0,8)}..."`);
+
+        // Parseia "nome:chave,nome:chave" → Map { chave → nome }
+        const keyMap = new Map(
+            rawKeys.split(",")
+                   .map(e => e.trim().split(":"))
+                   .filter(([n, k]) => n && k)
+                   .map(([name, ...rest]) => [rest.join(":"), name])
+        );
+
+        if (!clientKey || !keyMap.has(clientKey)) {
+            console.log(`[auth] chave inválida ou ausente: "${clientKey.slice(0,8)}..."`);
             return res.status(401).json({ jsonrpc:"2.0", error:{ code:-32000, message:"Unauthorized: X-MCP-KEY inválida ou ausente" }, id: req.body?.id ?? null });
         }
+
+        console.log(`[auth] usuário autenticado: ${keyMap.get(clientKey)}`);
     }
 
     if (method?.startsWith("notifications/")) return res.status(202).end();
@@ -312,6 +320,6 @@ app.listen(PORT, "0.0.0.0", () => {
     console.log(`║  GET  /mcp  → SSE keep-alive                 ║`);
     console.log(`║  GET  /health                                 ║`);
     console.log(`╠══════════════════════════════════════════════╣`);
-    console.log(`║  n8n: ${DEFAULT_N8N_URL ? "configurado ✓" : "NÃO configurado ✗"}                     ║`);
+    console.log(`║  n8n: credenciais via headers (X-N8N-URL + X-N8N-API-KEY)     ║`);
     console.log(`╚══════════════════════════════════════════════╝`);
 });
